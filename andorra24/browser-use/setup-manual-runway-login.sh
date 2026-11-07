@@ -18,10 +18,11 @@ apt-get update -qq
 apt-get install -y --no-install-recommends xvfb x11vnc novnc websockify xauth openssl
 install -d -m 0700 -o "$USER_NAME" -g "$USER_NAME" "$STATE/runway-profile"
 install -d -m 0700 /etc/andorra24-browser-use
-if [[ ! -f "$STATE/.Xauthority" ]]; then
-  runuser -u "$USER_NAME" -- xauth -f "$STATE/.Xauthority" add :99 . "$(openssl rand -hex 16)"
-fi
+# Xauthority must exist before xauth. Repair any incomplete earlier install.
+touch "$STATE/.Xauthority"
+chown "$USER_NAME:$USER_NAME" "$STATE/.Xauthority"
 chmod 0600 "$STATE/.Xauthority"
+runuser -u "$USER_NAME" -- xauth -f "$STATE/.Xauthority" add :99 . "$(openssl rand -hex 16)"
 if [[ ! -f "$STATE/vnc-password" ]]; then
   vnc_pw="$(openssl rand -hex 4)"
   printf '%s\n' "$vnc_pw" >/etc/andorra24-browser-use/vnc-readable-on-runner.txt
@@ -45,7 +46,6 @@ Environment=HOME=/var/lib/andorra24-browser-use
 ExecStart=/usr/bin/Xvfb :99 -auth /var/lib/andorra24-browser-use/.Xauthority -screen 0 1360x760x24 -nolisten tcp
 Restart=on-failure
 NoNewPrivileges=yes
-PrivateTmp=yes
 UNIT
 cat >/etc/systemd/system/andorra24-runway-login-browser.service <<'UNIT'
 [Unit]
@@ -63,7 +63,6 @@ WorkingDirectory=/opt/andorra24-browser-use
 ExecStart=/opt/andorra24-browser-use/.venv/bin/python /opt/andorra24-browser-use/runway-login.py
 Restart=no
 NoNewPrivileges=yes
-PrivateTmp=yes
 UMask=0077
 UNIT
 cat >/etc/systemd/system/andorra24-runway-login-vnc.service <<'UNIT'
@@ -79,7 +78,6 @@ Environment=HOME=/var/lib/andorra24-browser-use
 ExecStart=/usr/bin/x11vnc -display :99 -auth /var/lib/andorra24-browser-use/.Xauthority -localhost -rfbport 5901 -rfbauth /var/lib/andorra24-browser-use/vnc-password -forever -shared -noxdamage
 Restart=on-failure
 NoNewPrivileges=yes
-PrivateTmp=yes
 UNIT
 cat >/etc/systemd/system/andorra24-runway-login-web.service <<'UNIT'
 [Unit]
@@ -93,14 +91,30 @@ Group=andorra24browser
 ExecStart=/usr/bin/websockify --web=/usr/share/novnc 127.0.0.1:6080 127.0.0.1:5901
 Restart=on-failure
 NoNewPrivileges=yes
-PrivateTmp=yes
 UNIT
+# Stop any partially failed previous attempt; retain browser profile and secrets.
+systemctl stop andorra24-runway-login-browser.service andorra24-runway-login-web.service andorra24-runway-login-vnc.service andorra24-runway-login-display.service >/dev/null 2>&1 || true
 systemctl daemon-reload
+systemctl reset-failed andorra24-runway-login-display.service andorra24-runway-login-vnc.service andorra24-runway-login-web.service andorra24-runway-login-browser.service >/dev/null 2>&1 || true
+on_error() {
+  echo "RUNWAY_LOGIN_SERVICE_ERROR; diagnostic excerpts (no passwords):" >&2
+  systemctl --no-pager --full status andorra24-runway-login-display.service andorra24-runway-login-vnc.service andorra24-runway-login-web.service andorra24-runway-login-browser.service >&2 || true
+  journalctl --no-pager -n 18 -u andorra24-runway-login-display.service -u andorra24-runway-login-vnc.service -u andorra24-runway-login-web.service -u andorra24-runway-login-browser.service >&2 || true
+}
+trap on_error ERR
 systemctl start andorra24-runway-login-display.service
-sleep 2
+# Both Xvfb and the browser/VNC need the SAME Unix socket namespace.
+for i in $(seq 1 40); do
+  [[ -S /tmp/.X11-unix/X99 ]] && break
+  sleep 0.25
+done
+[[ -S /tmp/.X11-unix/X99 ]] || { echo "Xvfb socket not ready" >&2; on_error; exit 5; }
 systemctl start andorra24-runway-login-vnc.service
 systemctl start andorra24-runway-login-web.service
 systemctl start andorra24-runway-login-browser.service
+sleep 2
+systemctl is-active --quiet andorra24-runway-login-display.service
+systemctl is-active --quiet andorra24-runway-login-vnc.service
 systemctl is-active --quiet andorra24-runway-login-web.service
 systemctl is-active --quiet andorra24-runway-login-browser.service
 ss -ltn | grep -E '127[.]0[.]0[.]1:6080 ' >/dev/null
