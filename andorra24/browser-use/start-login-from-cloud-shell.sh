@@ -4,7 +4,7 @@ set -Eeuo pipefail
 PROJECT=andorra-24-live
 ZONE=us-central1-c
 VM=andorra24-runway-runner
-REF=ead271ff42697527c9677a1432d03f69b59acec9
+REF=b347ad88233e45323433b195f916fdb0ef3ed703
 ROOT=https://raw.githubusercontent.com/josepguirao/hal9000
 command -v gcloud >/dev/null || { echo "BLOCKED: needs Google Cloud Shell" >&2; exit 2; }
 [[ -n "$(gcloud auth list --filter=status:ACTIVE --format='value(account)' | head -n1)" ]] || { echo "BLOCKED: Google login required" >&2; exit 2; }
