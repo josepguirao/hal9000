@@ -18,11 +18,22 @@ apt-get update -qq
 apt-get install -y --no-install-recommends xvfb x11vnc novnc websockify xauth openssl
 install -d -m 0700 -o "$USER_NAME" -g "$USER_NAME" "$STATE/runway-profile"
 install -d -m 0700 /etc/andorra24-browser-use
+# Choose a distinct virtual X display. Do not delete display 99's lock,
+# kill its owner, or touch any display that another process might use.
+DISPLAY_NO=""
+for candidate in $(seq 190 219); do
+  if [[ ! -e "/tmp/.X${candidate}-lock" && ! -e "/tmp/.X11-unix/X${candidate}" ]]; then
+    DISPLAY_NO="$candidate"
+    break
+  fi
+done
+[[ -n "$DISPLAY_NO" ]] || { echo "BLOCKED: no unused display in 190-219; leaving existing Xvfb untouched" >&2; exit 4; }
+echo "Selected isolated virtual display :$DISPLAY_NO"
 # Xauthority must exist before xauth. Repair any incomplete earlier install.
 touch "$STATE/.Xauthority"
 chown "$USER_NAME:$USER_NAME" "$STATE/.Xauthority"
 chmod 0600 "$STATE/.Xauthority"
-runuser -u "$USER_NAME" -- xauth -f "$STATE/.Xauthority" add :99 . "$(openssl rand -hex 16)"
+runuser -u "$USER_NAME" -- xauth -f "$STATE/.Xauthority" add ":$DISPLAY_NO" . "$(openssl rand -hex 16)"
 if [[ ! -f "$STATE/vnc-password" ]]; then
   vnc_pw="$(openssl rand -hex 4)"
   printf '%s\n' "$vnc_pw" >/etc/andorra24-browser-use/vnc-readable-on-runner.txt
@@ -94,6 +105,10 @@ NoNewPrivileges=yes
 UNIT
 # Stop any partially failed previous attempt; retain browser profile and secrets.
 systemctl stop andorra24-runway-login-browser.service andorra24-runway-login-web.service andorra24-runway-login-vnc.service andorra24-runway-login-display.service >/dev/null 2>&1 || true
+# The unit templates use :99; rewrite all display references together to our chosen unused display.
+for unit in andorra24-runway-login-display andorra24-runway-login-vnc andorra24-runway-login-browser; do
+  sed -i "s/:99/:$DISPLAY_NO/g" "/etc/systemd/system/$unit.service"
+done
 systemctl daemon-reload
 systemctl reset-failed andorra24-runway-login-display.service andorra24-runway-login-vnc.service andorra24-runway-login-web.service andorra24-runway-login-browser.service >/dev/null 2>&1 || true
 on_error() {
@@ -105,10 +120,10 @@ trap on_error ERR
 systemctl start andorra24-runway-login-display.service
 # Both Xvfb and the browser/VNC need the SAME Unix socket namespace.
 for i in $(seq 1 40); do
-  [[ -S /tmp/.X11-unix/X99 ]] && break
+  [[ -S "/tmp/.X11-unix/X$DISPLAY_NO" ]] && break
   sleep 0.25
 done
-[[ -S /tmp/.X11-unix/X99 ]] || { echo "Xvfb socket not ready" >&2; on_error; exit 5; }
+[[ -S "/tmp/.X11-unix/X$DISPLAY_NO" ]] || { echo "Xvfb socket for :$DISPLAY_NO not ready" >&2; on_error; exit 5; }
 systemctl start andorra24-runway-login-vnc.service
 systemctl start andorra24-runway-login-web.service
 systemctl start andorra24-runway-login-browser.service
@@ -118,7 +133,7 @@ systemctl is-active --quiet andorra24-runway-login-vnc.service
 systemctl is-active --quiet andorra24-runway-login-web.service
 systemctl is-active --quiet andorra24-runway-login-browser.service
 ss -ltn | grep -E '127[.]0[.]0[.]1:6080 ' >/dev/null
-echo "RUNWAY_MANUAL_LOGIN_PORTAL_READY on $INSTANCE"
+echo "RUNWAY_MANUAL_LOGIN_PORTAL_READY on $INSTANCE (display :$DISPLAY_NO)"
 echo "VNC 127.0.0.1:6080 requires SSH tunnel; NEVER expose publicly."
 echo "View VNC passphrase on VM: sudo cat /etc/andorra24-browser-use/vnc-readable-on-runner.txt; do NOT post in chat."
 echo "After user signs into Runway, stop four login services to persist the profile."
