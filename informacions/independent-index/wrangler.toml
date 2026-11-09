@@ -1,0 +1,5 @@
+name = "informacions-index-staging"
+main = "worker.mjs"
+compatibility_date = "2026-11-09"
+workers_dev = true
+# Solo workers.dev, sin rutas de producción, dominios personalizados, DNS ni secretos.
